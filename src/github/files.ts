@@ -96,8 +96,9 @@ export async function createOrUpdateFile(
 		if (!Array.isArray(data) && data.type === "file") {
 			sha = data.sha;
 		}
-	} catch (error: any) {
-		if (error.status !== 404) throw error;
+	} catch (error: unknown) {
+		if (!(error instanceof Error) || !("status" in error) || error.status !== 404)
+			throw error;
 		// 404 means new file, no SHA needed
 	}
 

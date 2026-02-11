@@ -49,7 +49,7 @@ export async function fetchUpstreamAuthToken({
 	});
 
 	if (!resp.ok) {
-		console.log(await resp.text());
+		console.error(await resp.text());
 		return [
 			null,
 			new Response("Failed to fetch access token", { status: 500 }),

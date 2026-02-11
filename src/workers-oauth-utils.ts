@@ -6,6 +6,26 @@ import type {
 	ClientInfo,
 } from "@cloudflare/workers-oauth-provider";
 
+const CSRF_COOKIE = "__Host-CSRF_TOKEN";
+const CONSENTED_STATE_COOKIE = "__Host-CONSENTED_STATE";
+const APPROVED_CLIENTS_COOKIE = "__Host-APPROVED_CLIENTS";
+
+function getCookieValue(request: Request, name: string): string | null {
+	const cookieHeader = request.headers.get("Cookie");
+	if (!cookieHeader) return null;
+	const match = cookieHeader.split(";").find((c) => c.trimStart().startsWith(`${name}=`));
+	if (!match) return null;
+	return match.trimStart().substring(name.length + 1);
+}
+
+async function sha256Hex(input: string): Promise<string> {
+	const data = new TextEncoder().encode(input);
+	const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+	return Array.from(new Uint8Array(hashBuffer))
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+}
+
 export class OAuthError extends Error {
 	constructor(
 		public code: string,
@@ -86,9 +106,8 @@ function sanitizeUrl(url: string): string {
 }
 
 export function generateCSRFProtection(): CSRFProtectionResult {
-	const csrfCookieName = "__Host-CSRF_TOKEN";
 	const token = crypto.randomUUID();
-	const setCookie = `${csrfCookieName}=${token}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=600`;
+	const setCookie = `${CSRF_COOKIE}=${token}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=600`;
 	return { token, setCookie };
 }
 
@@ -96,7 +115,6 @@ export function validateCSRFToken(
 	formData: FormData,
 	request: Request,
 ): ValidateCSRFResult {
-	const csrfCookieName = "__Host-CSRF_TOKEN";
 	const tokenFromForm = formData.get("csrf_token");
 
 	if (!tokenFromForm || typeof tokenFromForm !== "string") {
@@ -107,12 +125,7 @@ export function validateCSRFToken(
 		);
 	}
 
-	const cookieHeader = request.headers.get("Cookie") || "";
-	const cookies = cookieHeader.split(";").map((c) => c.trim());
-	const csrfCookie = cookies.find((c) => c.startsWith(`${csrfCookieName}=`));
-	const tokenFromCookie = csrfCookie
-		? csrfCookie.substring(csrfCookieName.length + 1)
-		: null;
+	const tokenFromCookie = getCookieValue(request, CSRF_COOKIE);
 
 	if (!tokenFromCookie) {
 		throw new OAuthError("invalid_request", "Missing CSRF token cookie", 400);
@@ -122,7 +135,7 @@ export function validateCSRFToken(
 		throw new OAuthError("invalid_request", "CSRF token mismatch", 400);
 	}
 
-	const clearCookie = `${csrfCookieName}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`;
+	const clearCookie = `${CSRF_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`;
 	return { clearCookie };
 }
 
@@ -141,15 +154,8 @@ export async function createOAuthState(
 export async function bindStateToSession(
 	stateToken: string,
 ): Promise<BindStateResult> {
-	const consentedStateCookieName = "__Host-CONSENTED_STATE";
-	const encoder = new TextEncoder();
-	const data = encoder.encode(stateToken);
-	const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-	const hashArray = Array.from(new Uint8Array(hashBuffer));
-	const hashHex = hashArray
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
-	const setCookie = `${consentedStateCookieName}=${hashHex}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=600`;
+	const hashHex = await sha256Hex(stateToken);
+	const setCookie = `${CONSENTED_STATE_COOKIE}=${hashHex}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=600`;
 	return { setCookie };
 }
 
@@ -157,7 +163,6 @@ export async function validateOAuthState(
 	request: Request,
 	kv: KVNamespace,
 ): Promise<ValidateStateResult> {
-	const consentedStateCookieName = "__Host-CONSENTED_STATE";
 	const url = new URL(request.url);
 	const stateFromQuery = url.searchParams.get("state");
 
@@ -170,14 +175,7 @@ export async function validateOAuthState(
 		throw new OAuthError("invalid_request", "Invalid or expired state", 400);
 	}
 
-	const cookieHeader = request.headers.get("Cookie") || "";
-	const cookies = cookieHeader.split(";").map((c) => c.trim());
-	const consentedStateCookie = cookies.find((c) =>
-		c.startsWith(`${consentedStateCookieName}=`),
-	);
-	const consentedStateHash = consentedStateCookie
-		? consentedStateCookie.substring(consentedStateCookieName.length + 1)
-		: null;
+	const consentedStateHash = getCookieValue(request, CONSENTED_STATE_COOKIE);
 
 	if (!consentedStateHash) {
 		throw new OAuthError(
@@ -187,13 +185,7 @@ export async function validateOAuthState(
 		);
 	}
 
-	const encoder = new TextEncoder();
-	const data = encoder.encode(stateFromQuery);
-	const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-	const hashArray = Array.from(new Uint8Array(hashBuffer));
-	const stateHash = hashArray
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("");
+	const stateHash = await sha256Hex(stateFromQuery);
 
 	if (stateHash !== consentedStateHash) {
 		throw new OAuthError(
@@ -212,7 +204,7 @@ export async function validateOAuthState(
 
 	await kv.delete(`oauth:state:${stateFromQuery}`);
 
-	const clearCookie = `${consentedStateCookieName}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`;
+	const clearCookie = `${CONSENTED_STATE_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0`;
 	return { oauthReqInfo, clearCookie };
 }
 
@@ -233,7 +225,6 @@ export async function addApprovedClient(
 	clientId: string,
 	cookieSecret: string,
 ): Promise<string> {
-	const approvedClientsCookieName = "__Host-APPROVED_CLIENTS";
 	const THIRTY_DAYS_IN_SECONDS = 2592000;
 
 	const existingApprovedClients =
@@ -246,7 +237,7 @@ export async function addApprovedClient(
 	const signature = await signData(payload, cookieSecret);
 	const cookieValue = `${signature}.${btoa(payload)}`;
 
-	return `${approvedClientsCookieName}=${cookieValue}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${THIRTY_DAYS_IN_SECONDS}`;
+	return `${APPROVED_CLIENTS_COOKIE}=${cookieValue}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${THIRTY_DAYS_IN_SECONDS}`;
 }
 
 export interface ApprovalDialogOptions {
@@ -409,19 +400,8 @@ async function getApprovedClientsFromCookie(
 	request: Request,
 	cookieSecret: string,
 ): Promise<string[] | null> {
-	const approvedClientsCookieName = "__Host-APPROVED_CLIENTS";
-	const cookieHeader = request.headers.get("Cookie");
-	if (!cookieHeader) return null;
-
-	const cookies = cookieHeader.split(";").map((c) => c.trim());
-	const targetCookie = cookies.find((c) =>
-		c.startsWith(`${approvedClientsCookieName}=`),
-	);
-	if (!targetCookie) return null;
-
-	const cookieValue = targetCookie.substring(
-		approvedClientsCookieName.length + 1,
-	);
+	const cookieValue = getCookieValue(request, APPROVED_CLIENTS_COOKIE);
+	if (!cookieValue) return null;
 	const parts = cookieValue.split(".");
 	if (parts.length !== 2) return null;
 

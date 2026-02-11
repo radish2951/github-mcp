@@ -35,9 +35,9 @@ app.get("/authorize", async (c) => {
 		const { stateToken } = await createOAuthState(oauthReqInfo, c.env.OAUTH_KV);
 		const { setCookie: sessionBindingCookie } =
 			await bindStateToSession(stateToken);
-		return redirectToGitHub(c.req.raw, stateToken, {
-			"Set-Cookie": sessionBindingCookie,
-		});
+		const headers = new Headers();
+		headers.append("Set-Cookie", sessionBindingCookie);
+		return redirectToGitHub(c.req.raw, stateToken, headers);
 	}
 
 	const { token: csrfToken, setCookie } = generateCSRFProtection();
@@ -93,7 +93,7 @@ app.post("/authorize", async (c) => {
 		headers.append("Set-Cookie", approvedClientCookie);
 		headers.append("Set-Cookie", sessionBindingCookie);
 
-		return redirectToGitHub(c.req.raw, stateToken, Object.fromEntries(headers));
+		return redirectToGitHub(c.req.raw, stateToken, headers);
 	} catch (error: any) {
 		console.error("POST /authorize error:", error);
 		if (error instanceof OAuthError) {
@@ -106,21 +106,20 @@ app.post("/authorize", async (c) => {
 async function redirectToGitHub(
 	request: Request,
 	stateToken: string,
-	headers: Record<string, string> = {},
+	extraHeaders: Headers = new Headers(),
 ) {
-	return new Response(null, {
-		headers: {
-			...headers,
-			location: getUpstreamAuthorizeUrl({
-				client_id: env.GITHUB_CLIENT_ID,
-				redirect_uri: new URL("/callback", request.url).href,
-				scope: "repo read:user",
-				state: stateToken,
-				upstream_url: "https://github.com/login/oauth/authorize",
-			}),
-		},
-		status: 302,
-	});
+	const headers = new Headers(extraHeaders);
+	headers.set(
+		"Location",
+		getUpstreamAuthorizeUrl({
+			client_id: env.GITHUB_CLIENT_ID,
+			redirect_uri: new URL("/callback", request.url).href,
+			scope: "repo read:user",
+			state: stateToken,
+			upstream_url: "https://github.com/login/oauth/authorize",
+		}),
+	);
+	return new Response(null, { status: 302, headers });
 }
 
 app.get("/callback", async (c) => {

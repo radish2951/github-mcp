@@ -17,6 +17,10 @@ export class GitHubMCP extends McpAgent<Env, Record<string, never>, Props> {
 		version: "0.1.0",
 	});
 
+	private get octokit() {
+		return createOctokit(this.props!.accessToken);
+	}
+
 	private handleError(error: unknown) {
 		return {
 			content: [
@@ -43,8 +47,7 @@ export class GitHubMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ owner, repo, path }) => {
 				try {
-					const octokit = createOctokit(this.props!.accessToken);
-					const result = await getFile(octokit, owner, repo, path);
+					const result = await getFile(this.octokit, owner, repo, path);
 					return {
 						content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 					};
@@ -68,9 +71,8 @@ export class GitHubMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ owner, repo, path, content, message }) => {
 				try {
-					const octokit = createOctokit(this.props!.accessToken);
 					const result = await createOrUpdateFile(
-						octokit,
+						this.octokit,
 						owner,
 						repo,
 						path,
@@ -99,8 +101,13 @@ export class GitHubMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ owner, repo, path, message }) => {
 				try {
-					const octokit = createOctokit(this.props!.accessToken);
-					const result = await deleteFile(octokit, owner, repo, path, message);
+					const result = await deleteFile(
+						this.octokit,
+						owner,
+						repo,
+						path,
+						message,
+					);
 					return {
 						content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 					};
